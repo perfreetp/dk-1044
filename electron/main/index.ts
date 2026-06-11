@@ -130,18 +130,22 @@ function parseDiskFreePercent(diskStr: string): number {
   return 100;
 }
 
+function generateAnomalyKey(deviceId: number, anomalyType: string, description: string): string {
+  return `${deviceId}_${anomalyType}_${description}`;
+}
+
 function detectAnomalies() {
   if (!db) return;
 
-  const existingAnomalyKeys = new Map();
+  const existingPendingAnomalies = new Map<string, any>();
   db.anomalies
     .filter(a => a.status === 'pending')
     .forEach(a => {
-      const key = `${a.device_id}_${a.anomaly_type}`;
-      existingAnomalyKeys.set(key, a.id);
+      const key = generateAnomalyKey(a.device_id, a.anomaly_type, a.anomaly_description);
+      existingPendingAnomalies.set(key, a);
     });
 
-  const newAnomalyKeys = new Set<string>();
+  const currentAnomalyKeys = new Set<string>();
   const anomaliesToKeep = db.anomalies.filter(a => a.status !== 'pending');
 
   db.devices.forEach(device => {
@@ -153,14 +157,15 @@ function detectAnomalies() {
     if (specs) {
       const memSize = parseMemorySize(specs.memory);
       if (memSize > 0 && memSize < 8) {
-        const key = `${device.id}_low_config`;
-        newAnomalyKeys.add(key);
-        if (!existingAnomalyKeys.has(key)) {
+        const desc = `${device.hostname} 内存容量 ${specs.memory}，低于8GB`;
+        const key = generateAnomalyKey(device.id, 'low_config', desc);
+        currentAnomalyKeys.add(key);
+        if (!existingPendingAnomalies.has(key)) {
           anomaliesToKeep.push({
             id: db!.nextIds.anomalies++,
             device_id: device.id,
             anomaly_type: 'low_config',
-            anomaly_description: `${device.hostname} 内存容量 ${specs.memory}，低于8GB`,
+            anomaly_description: desc,
             status: 'pending',
             detected_at: new Date().toISOString(),
             resolved_at: null
@@ -170,14 +175,15 @@ function detectAnomalies() {
 
       const diskSize = parseDiskSize(specs.disk);
       if (diskSize > 0 && diskSize < 256) {
-        const key = `${device.id}_low_disk`;
-        newAnomalyKeys.add(key);
-        if (!existingAnomalyKeys.has(key)) {
+        const desc = `${device.hostname} 磁盘容量 ${specs.disk}，低于256GB`;
+        const key = generateAnomalyKey(device.id, 'low_config', desc);
+        currentAnomalyKeys.add(key);
+        if (!existingPendingAnomalies.has(key)) {
           anomaliesToKeep.push({
             id: db!.nextIds.anomalies++,
             device_id: device.id,
             anomaly_type: 'low_config',
-            anomaly_description: `${device.hostname} 磁盘容量 ${specs.disk}，低于256GB`,
+            anomaly_description: desc,
             status: 'pending',
             detected_at: new Date().toISOString(),
             resolved_at: null
@@ -187,14 +193,15 @@ function detectAnomalies() {
 
       const freePercent = parseDiskFreePercent(specs.disk);
       if (freePercent < 10) {
-        const key = `${device.id}_disk_warning`;
-        newAnomalyKeys.add(key);
-        if (!existingAnomalyKeys.has(key)) {
+        const desc = `${device.hostname} 磁盘可用空间 ${freePercent}%，低于10%`;
+        const key = generateAnomalyKey(device.id, 'disk_warning', desc);
+        currentAnomalyKeys.add(key);
+        if (!existingPendingAnomalies.has(key)) {
           anomaliesToKeep.push({
             id: db!.nextIds.anomalies++,
             device_id: device.id,
             anomaly_type: 'disk_warning',
-            anomaly_description: `${device.hostname} 磁盘可用空间 ${freePercent}%，低于10%`,
+            anomaly_description: desc,
             status: 'pending',
             detected_at: new Date().toISOString(),
             resolved_at: null
@@ -205,14 +212,15 @@ function detectAnomalies() {
 
     const hasOwner = tags.some(t => t.tag_type === 'owner' && t.tag_value);
     if (!hasOwner) {
-      const key = `${device.id}_unassigned_owner`;
-      newAnomalyKeys.add(key);
-      if (!existingAnomalyKeys.has(key)) {
+      const desc = `${device.hostname} 未登记责任人`;
+      const key = generateAnomalyKey(device.id, 'unassigned_owner', desc);
+      currentAnomalyKeys.add(key);
+      if (!existingPendingAnomalies.has(key)) {
         anomaliesToKeep.push({
           id: db!.nextIds.anomalies++,
           device_id: device.id,
           anomaly_type: 'unassigned_owner',
-          anomaly_description: `${device.hostname} 未登记责任人`,
+          anomaly_description: desc,
           status: 'pending',
           detected_at: new Date().toISOString(),
           resolved_at: null
@@ -222,14 +230,15 @@ function detectAnomalies() {
 
     const hostnameCount = db!.devices.filter(d => d.hostname === device.hostname).length;
     if (hostnameCount > 1) {
-      const key = `${device.id}_duplicate_hostname`;
-      newAnomalyKeys.add(key);
-      if (!existingAnomalyKeys.has(key)) {
+      const desc = `${device.hostname} 存在重复主机名（共${hostnameCount}台设备）`;
+      const key = generateAnomalyKey(device.id, 'duplicate_hostname', desc);
+      currentAnomalyKeys.add(key);
+      if (!existingPendingAnomalies.has(key)) {
         anomaliesToKeep.push({
           id: db!.nextIds.anomalies++,
           device_id: device.id,
           anomaly_type: 'duplicate_hostname',
-          anomaly_description: `${device.hostname} 存在重复主机名（共${hostnameCount}台设备）`,
+          anomaly_description: desc,
           status: 'pending',
           detected_at: new Date().toISOString(),
           resolved_at: null
@@ -245,14 +254,15 @@ function detectAnomalies() {
         const daysUntilExpiry = Math.ceil((warrantyDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
         
         if (daysUntilExpiry > 0 && daysUntilExpiry <= 30) {
-          const key = `${device.id}_warranty_expiring`;
-          newAnomalyKeys.add(key);
-          if (!existingAnomalyKeys.has(key)) {
+          const desc = `${device.hostname} 保修将在${daysUntilExpiry}天后到期（${warrantyTag.tag_value}）`;
+          const key = generateAnomalyKey(device.id, 'warranty_expiring', desc);
+          currentAnomalyKeys.add(key);
+          if (!existingPendingAnomalies.has(key)) {
             anomaliesToKeep.push({
               id: db!.nextIds.anomalies++,
               device_id: device.id,
               anomaly_type: 'warranty_expiring',
-              anomaly_description: `${device.hostname} 保修将在${daysUntilExpiry}天后到期（${warrantyTag.tag_value}）`,
+              anomaly_description: desc,
               status: 'pending',
               detected_at: new Date().toISOString(),
               resolved_at: null
@@ -602,9 +612,19 @@ function setupIpcHandlers() {
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
       return content;
-    } catch (error) {
+    } catch (error: any) {
       log.error('Error reading file:', error);
-      throw error;
+      throw new Error(`文件读取失败：${error.message}`);
+    }
+  });
+
+  ipcMain.handle('file:readBinary', async (event, filePath: string) => {
+    try {
+      const buffer = fs.readFileSync(filePath);
+      return Array.from(buffer);
+    } catch (error: any) {
+      log.error('Error reading binary file:', error);
+      throw new Error(`二进制文件读取失败：${error.message}`);
     }
   });
 
@@ -612,9 +632,20 @@ function setupIpcHandlers() {
     try {
       fs.writeFileSync(filePath, content, 'utf-8');
       return { success: true };
-    } catch (error) {
+    } catch (error: any) {
       log.error('Error writing file:', error);
-      throw error;
+      throw new Error(`文件写入失败：${error.message}`);
+    }
+  });
+
+  ipcMain.handle('file:writeBinary', async (event, filePath: string, data: number[]) => {
+    try {
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(filePath, buffer);
+      return { success: true };
+    } catch (error: any) {
+      log.error('Error writing binary file:', error);
+      throw new Error(`二进制文件写入失败：${error.message}`);
     }
   });
 

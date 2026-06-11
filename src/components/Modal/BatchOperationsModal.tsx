@@ -58,74 +58,104 @@ export default function BatchOperationsModal() {
   const handleExportReport = async () => {
     const result = await window.electronAPI.dialog.saveFile({
       defaultPath: '设备盘点表.xlsx',
-      filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
+      filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }]
     });
 
     if (!result.canceled && result.filePath) {
-      const devicesWithDetails = await Promise.all(
-        selectedDevicesList.map(async (device) => {
-          const specs = await window.electronAPI.hardware.getByDevice(device.id);
-          const tags = await window.electronAPI.tags.getByDevice(device.id);
-          
-          const tagMap: Record<string, string> = {};
-          tags.forEach((tag: any) => {
-            tagMap[tag.tag_type] = tag.tag_value || tag.tag_name;
-          });
+      try {
+        const devicesWithDetails = await Promise.all(
+          selectedDevicesList.map(async (device) => {
+            try {
+              const specs = await window.electronAPI.hardware.getByDevice(device.id);
+              const tags = await window.electronAPI.tags.getByDevice(device.id);
+              
+              const tagMap: Record<string, string> = {};
+              tags.forEach((tag: any) => {
+                tagMap[tag.tag_type] = tag.tag_value || tag.tag_name;
+              });
 
-          return {
-            '主机名': device.hostname,
-            'IP地址': device.ip_address || '',
-            'MAC地址': device.mac_address || '',
-            '序列号': device.serial_number || '',
-            '部门': device.department || '',
-            '状态': device.status === 'online' ? '在线' : device.status === 'retired' ? '退役' : '离线',
-            '最后巡检时间': device.last_inspection_time ? new Date(device.last_inspection_time).toLocaleDateString('zh-CN') : '',
-            '处理器': specs?.processor || '',
-            '内存': specs?.memory || '',
-            '磁盘': specs?.disk || '',
-            '显卡': specs?.graphics || '',
-            '操作系统': specs?.os_info || '',
-            '网络信息': specs?.network_info || '',
-            '主要软件': specs?.software_list || '',
-            '用途': tagMap['purpose'] || '',
-            '责任人': tagMap['owner'] || '',
-            '位置': tagMap['location'] || '',
-            '保修信息': tagMap['warranty'] || ''
-          };
-        })
-      );
+              return {
+                '主机名': device.hostname || '',
+                'IP地址': device.ip_address || '',
+                'MAC地址': device.mac_address || '',
+                '序列号': device.serial_number || '',
+                '部门': device.department || '',
+                '状态': device.status === 'online' ? '在线' : device.status === 'retired' ? '退役' : '离线',
+                '最后巡检时间': device.last_inspection_time ? new Date(device.last_inspection_time).toLocaleDateString('zh-CN') : '',
+                '处理器': specs?.processor || '',
+                '内存': specs?.memory || '',
+                '磁盘': specs?.disk || '',
+                '显卡': specs?.graphics || '',
+                '操作系统': specs?.os_info || '',
+                '网络信息': specs?.network_info || '',
+                '主要软件': specs?.software_list || '',
+                '用途': tagMap['purpose'] || '',
+                '责任人': tagMap['owner'] || '',
+                '位置': tagMap['location'] || '',
+                '保修信息': tagMap['warranty'] || ''
+              };
+            } catch (error) {
+              return {
+                '主机名': device.hostname || '',
+                'IP地址': device.ip_address || '',
+                'MAC地址': device.mac_address || '',
+                '序列号': device.serial_number || '',
+                '部门': device.department || '',
+                '状态': device.status === 'online' ? '在线' : device.status === 'retired' ? '退役' : '离线',
+                '最后巡检时间': '',
+                '处理器': '',
+                '内存': '',
+                '磁盘': '',
+                '显卡': '',
+                '操作系统': '',
+                '网络信息': '',
+                '主要软件': '',
+                '用途': '',
+                '责任人': '',
+                '位置': '',
+                '保修信息': ''
+              };
+            }
+          })
+        );
 
-      const worksheet = XLSX.utils.json_to_sheet(devicesWithDetails);
+        const worksheet = XLSX.utils.json_to_sheet(devicesWithDetails);
 
-      const colWidths = [
-        { wch: 20 }, { wch: 15 }, { wch: 18 }, { wch: 20 }, { wch: 12 },
-        { wch: 8 }, { wch: 15 }, { wch: 25 }, { wch: 12 }, { wch: 30 },
-        { wch: 20 }, { wch: 30 }, { wch: 30 }, { wch: 30 }, { wch: 12 },
-        { wch: 12 }, { wch: 15 }, { wch: 20 }
-      ];
-      worksheet['!cols'] = colWidths;
+        const colWidths = [
+          { wch: 20 }, { wch: 15 }, { wch: 18 }, { wch: 20 }, { wch: 12 },
+          { wch: 8 }, { wch: 15 }, { wch: 25 }, { wch: 12 }, { wch: 30 },
+          { wch: 20 }, { wch: 30 }, { wch: 30 }, { wch: 30 }, { wch: 12 },
+          { wch: 12 }, { wch: 15 }, { wch: 20 }
+        ];
+        worksheet['!cols'] = colWidths;
 
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, '设备列表');
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, '设备列表');
 
-      const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-      const base64 = XLSX.utils.encode_as_base64(excelBuffer);
+        const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
 
-      await window.electronAPI.file.write(result.filePath, base64);
-      alert(`盘点表导出成功！共导出 ${devicesWithDetails.length} 台设备的信息`);
+        await window.electronAPI.file.writeBinary(result.filePath, Array.from(excelBuffer));
+        alert(`盘点表导出成功！共导出 ${devicesWithDetails.length} 台设备的信息`);
+      } catch (writeError: any) {
+        alert(`文件保存失败：${writeError.message}\n请检查保存路径是否可写，或尝试更换保存位置。`);
+      }
     }
   };
 
   const handlePrintStickers = async () => {
     const result = await window.electronAPI.dialog.saveFile({
       defaultPath: '资产贴纸.html',
-      filters: [{ name: 'HTML Files', extensions: ['html'] }]
+      filters: [{ name: 'HTML 文件', extensions: ['html'] }]
     });
 
     if (!result.canceled && result.filePath) {
-      const stickersHTML = generateStickersHTML();
-      await window.electronAPI.file.write(result.filePath, stickersHTML);
-      alert(`资产贴纸生成成功！共生成 ${selectedDevicesList.length} 张贴纸`);
+      try {
+        const stickersHTML = generateStickersHTML();
+        await window.electronAPI.file.write(result.filePath, stickersHTML);
+        alert(`资产贴纸生成成功！共生成 ${selectedDevicesList.length} 张贴纸`);
+      } catch (writeError: any) {
+        alert(`文件保存失败：${writeError.message}\n请检查保存路径是否可写，或尝试更换保存位置。`);
+      }
     }
   };
 
@@ -220,17 +250,20 @@ export default function BatchOperationsModal() {
       return;
     }
 
-    for (const deviceId of selectedDevices) {
-      await window.electronAPI.transfer.create({
-        device_id: deviceId,
-        from_owner: transferData.from_owner || null,
-        to_owner: transferData.to_owner,
-        notes: transferData.notes || null
-      });
+    try {
+      for (const deviceId of selectedDevices) {
+        await window.electronAPI.transfer.create({
+          device_id: deviceId,
+          from_owner: transferData.from_owner || null,
+          to_owner: transferData.to_owner,
+          notes: transferData.notes || null
+        });
+      }
+      alert(`移交记录创建成功！已为 ${selectedDevices.length} 台设备创建移交记录`);
+      setTransferData({ from_owner: '', to_owner: '', notes: '' });
+    } catch (error: any) {
+      alert(`移交记录创建失败：${error.message}`);
     }
-
-    alert(`移交记录创建成功！已为 ${selectedDevices.length} 台设备创建移交记录`);
-    setTransferData({ from_owner: '', to_owner: '', notes: '' });
   };
 
   const handleArchiveDevices = async () => {
@@ -239,18 +272,25 @@ export default function BatchOperationsModal() {
       return;
     }
 
-    for (const deviceId of selectedDevices) {
-      await updateDevice(deviceId, { status: 'retired' });
+    try {
+      for (const deviceId of selectedDevices) {
+        await updateDevice(deviceId, { status: 'retired' });
+      }
+      clearSelection();
+      await fetchDevices();
+      alert('设备归档成功！');
+    } catch (error: any) {
+      alert(`设备归档失败：${error.message}`);
     }
-
-    clearSelection();
-    await fetchDevices();
-    alert('设备归档成功！');
   };
 
   const handleSaveSnapshots = async () => {
-    const results = await window.electronAPI.snapshots.saveBatch(selectedDevices);
-    setSnapshotResults(results);
+    try {
+      const results = await window.electronAPI.snapshots.saveBatch(selectedDevices);
+      setSnapshotResults(results);
+    } catch (error: any) {
+      alert(`保存快照失败：${error.message}`);
+    }
   };
 
   const getOperationName = (type: OperationType) => {

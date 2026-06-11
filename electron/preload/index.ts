@@ -41,7 +41,9 @@ const electronAPI = {
   },
   file: {
     read: (filePath: string) => ipcRenderer.invoke('file:read', filePath),
+    readBinary: (filePath: string) => ipcRenderer.invoke('file:readBinary', filePath),
     write: (filePath: string, content: string) => ipcRenderer.invoke('file:write', filePath, content),
+    writeBinary: (filePath: string, data: number[]) => ipcRenderer.invoke('file:writeBinary', filePath, data),
   },
 };
 

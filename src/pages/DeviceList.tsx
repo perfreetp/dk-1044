@@ -7,6 +7,7 @@ interface ImportResult {
   success: number;
   failed: number;
   failedDevices: string[];
+  errors: string[];
 }
 
 export default function DeviceListPage() {
@@ -50,7 +51,9 @@ export default function DeviceListPage() {
   const getFieldValue = (row: any, ...candidates: string[]): string => {
     for (const key of candidates) {
       const value = row[key] || row[key.toLowerCase()] || row[key.toUpperCase()];
-      if (value) return String(value).trim();
+      if (value !== undefined && value !== null && String(value).trim() !== '') {
+        return String(value).trim();
+      }
     }
     return '';
   };
@@ -76,24 +79,30 @@ export default function DeviceListPage() {
     try {
       const result = await window.electronAPI.dialog.openFile({
         filters: [
-          { name: 'Excel Files', extensions: ['xlsx', 'xls', 'csv'] },
-          { name: 'CSV Files', extensions: ['csv'] }
+          { name: 'Excel 和 CSV 文件', extensions: ['xlsx', 'xls', 'csv'] }
         ]
       });
 
       if (!result.canceled && result.filePaths.length > 0) {
         const filePath = result.filePaths[0];
-        const content = await window.electronAPI.file.read(filePath);
         
         let jsonData: any[] = [];
         
-        if (filePath.toLowerCase().endsWith('.csv')) {
-          const lines = content.split('\n');
-          if (lines.length > 0) {
-            const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+        try {
+          if (filePath.toLowerCase().endsWith('.csv')) {
+            const content = await window.electronAPI.file.read(filePath);
+            const lines = content.split('\n').filter(line => line.trim());
+            
+            if (lines.length === 0) {
+              throw new Error('CSV文件内容为空');
+            }
+            
+            const headerLine = lines[0];
+            const headers = parseCSVLine(headerLine);
+            
             for (let i = 1; i < lines.length; i++) {
               if (lines[i].trim()) {
-                const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+                const values = parseCSVLine(lines[i]);
                 const row: any = {};
                 headers.forEach((header, index) => {
                   row[header] = values[index] || '';
@@ -101,30 +110,49 @@ export default function DeviceListPage() {
                 jsonData.push(row);
               }
             }
+          } else {
+            const content = await window.electronAPI.file.readBinary(filePath);
+            const workbook = XLSX.read(content, { type: 'array', cellDates: true, cellNF: true });
+            
+            if (workbook.SheetNames.length === 0) {
+              throw new Error('Excel文件中没有工作表');
+            }
+            
+            const sheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[sheetName];
+            jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
           }
-        } else {
-          const workbook = XLSX.read(content, { type: 'string' });
-          const sheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[sheetName];
-          jsonData = XLSX.utils.sheet_to_json(worksheet);
+        } catch (parseError: any) {
+          alert(`文件解析失败：${parseError.message}\n请确保文件格式正确且可读。`);
+          return;
+        }
+
+        if (jsonData.length === 0) {
+          alert('文件中没有找到设备数据');
+          return;
         }
 
         let successCount = 0;
         let failedCount = 0;
         const failedDevices: string[] = [];
+        const errors: string[] = [];
 
-        for (const row of jsonData) {
-          const hostname = getFieldValue(row, 'hostname', 'Hostname', '主机名', 'name', 'Name', 'computer_name');
+        for (let i = 0; i < jsonData.length; i++) {
+          const row = jsonData[i];
+          const hostname = getFieldValue(row, 'hostname', 'Hostname', '主机名', 'name', 'Name', 'computer_name', '电脑名称');
           
           if (!hostname) {
+            errors.push(`第${i + 2}行：缺少主机名`);
+            failedCount++;
+            failedDevices.push(`第${i + 2}行`);
             continue;
           }
 
           const deviceData = {
             hostname: hostname,
-            ip_address: getFieldValue(row, 'ip_address', 'ip', 'IP', 'IP地址', 'ipaddr'),
+            ip_address: getFieldValue(row, 'ip_address', 'ip', 'IP', 'IP地址', 'ipaddr', 'IP地址'),
             mac_address: getFieldValue(row, 'mac_address', 'mac', 'MAC', 'MAC地址'),
-            serial_number: getFieldValue(row, 'serial_number', 'serial', 'Serial', '序列号', 'sn'),
+            serial_number: getFieldValue(row, 'serial_number', 'serial', 'Serial', '序列号', 'sn', 'SN', '序列号'),
             department: getFieldValue(row, 'department', 'Department', '部门', 'dept'),
             status: getFieldValue(row, 'status', 'Status', '状态') || 'offline',
             last_inspection_time: new Date().toISOString()
@@ -135,147 +163,224 @@ export default function DeviceListPage() {
             
             const hardwareSpecs = parseHardwareSpecs(row);
             if (hasHardwareInfo(hardwareSpecs)) {
-              await window.electronAPI.hardware.saveSnapshot(newDevice.id, {
-                processor: hardwareSpecs.processor || null,
-                memory: hardwareSpecs.memory || null,
-                disk: hardwareSpecs.disk || null,
-                graphics: hardwareSpecs.graphics || null,
-                os_info: hardwareSpecs.os_info || null,
-                network_info: hardwareSpecs.network_info || null,
-                software_list: hardwareSpecs.software_list || null
-              });
+              try {
+                await window.electronAPI.hardware.saveSnapshot(newDevice.id, {
+                  processor: hardwareSpecs.processor || null,
+                  memory: hardwareSpecs.memory || null,
+                  disk: hardwareSpecs.disk || null,
+                  graphics: hardwareSpecs.graphics || null,
+                  os_info: hardwareSpecs.os_info || null,
+                  network_info: hardwareSpecs.network_info || null,
+                  software_list: hardwareSpecs.software_list || null
+                });
+              } catch (hwError) {
+                console.warn('保存硬件信息失败:', hostname, hwError);
+              }
             }
 
-            const warrantyEnd = getFieldValue(row, 'warranty_end', 'warrantyEnd', 'warranty_date', '保修到期', '保修结束日期');
+            const warrantyEnd = getFieldValue(row, 'warranty_end', 'warrantyEnd', 'warranty_date', '保修到期', 'warranty', '保修截止日期', '保修结束日期');
             if (warrantyEnd) {
-              await window.electronAPI.tags.create({
-                device_id: newDevice.id,
-                tag_type: 'warranty',
-                tag_name: '保修到期日期',
-                tag_value: warrantyEnd
-              });
+              try {
+                await window.electronAPI.tags.create({
+                  device_id: newDevice.id,
+                  tag_type: 'warranty',
+                  tag_name: '保修到期日期',
+                  tag_value: warrantyEnd
+                });
+              } catch (tagError) {
+                console.warn('保存保修标签失败:', hostname, tagError);
+              }
             }
 
-            const owner = getFieldValue(row, 'owner', 'Owner', '责任人', 'responsible', '负责人');
+            const owner = getFieldValue(row, 'owner', 'Owner', '责任人', 'responsible', '负责人', '使用人');
             if (owner) {
-              await window.electronAPI.tags.create({
-                device_id: newDevice.id,
-                tag_type: 'owner',
-                tag_name: '责任人',
-                tag_value: owner
-              });
+              try {
+                await window.electronAPI.tags.create({
+                  device_id: newDevice.id,
+                  tag_type: 'owner',
+                  tag_name: '责任人',
+                  tag_value: owner
+                });
+              } catch (tagError) {
+                console.warn('保存责任人标签失败:', hostname, tagError);
+              }
             }
 
-            const location = getFieldValue(row, 'location', 'Location', '位置', '地点', '物理位置');
+            const location = getFieldValue(row, 'location', 'Location', '位置', '地点', '物理位置', '位置信息');
             if (location) {
-              await window.electronAPI.tags.create({
-                device_id: newDevice.id,
-                tag_type: 'location',
-                tag_name: '位置',
-                tag_value: location
-              });
+              try {
+                await window.electronAPI.tags.create({
+                  device_id: newDevice.id,
+                  tag_type: 'location',
+                  tag_name: '位置',
+                  tag_value: location
+                });
+              } catch (tagError) {
+                console.warn('保存位置标签失败:', hostname, tagError);
+              }
             }
 
-            const purpose = getFieldValue(row, 'purpose', 'Purpose', '用途', 'usage', '使用用途');
+            const purpose = getFieldValue(row, 'purpose', 'Purpose', '用途', 'usage', '使用用途', '设备用途');
             if (purpose) {
-              await window.electronAPI.tags.create({
-                device_id: newDevice.id,
-                tag_type: 'purpose',
-                tag_name: '用途',
-                tag_value: purpose
-              });
+              try {
+                await window.electronAPI.tags.create({
+                  device_id: newDevice.id,
+                  tag_type: 'purpose',
+                  tag_name: '用途',
+                  tag_value: purpose
+                });
+              } catch (tagError) {
+                console.warn('保存用途标签失败:', hostname, tagError);
+              }
             }
 
             successCount++;
-          } catch (error) {
-            console.warn('Error importing device:', hostname, error);
+          } catch (error: any) {
+            console.warn('导入设备失败:', hostname, error);
             failedCount++;
             failedDevices.push(hostname);
+            errors.push(`${hostname}：${error.message || '导入失败'}`);
           }
         }
 
         await fetchDevices();
         await fetchDepartments();
 
-        await window.electronAPI.anomalies.detectAll();
+        try {
+          await window.electronAPI.anomalies.detectAll();
+        } catch (detectError) {
+          console.warn('异常检测失败:', detectError);
+        }
 
-        const resultMessage = `导入完成！成功: ${successCount} 台设备${failedCount > 0 ? `，失败: ${failedCount} 台 (${failedDevices.join(', ')})` : ''}`;
+        const resultMessage = errors.length > 0
+          ? `导入完成！成功: ${successCount} 台\n失败: ${failedCount} 台\n\n失败详情：\n${errors.slice(0, 5).join('\n')}${errors.length > 5 ? '\n...等' : ''}`
+          : `导入完成！成功: ${successCount} 台${failedCount > 0 ? `，失败: ${failedCount} 台` : ''}`;
+        
         setImportResult({
           success: successCount,
           failed: failedCount,
-          failedDevices
+          failedDevices,
+          errors
         });
         alert(resultMessage);
       }
-    } catch (error) {
-      console.error('Error importing file:', error);
-      alert('导入失败：' + (error as Error).message);
+    } catch (error: any) {
+      console.error('导入失败:', error);
+      alert(`导入失败：${error.message || '未知错误'}\n请检查文件格式是否正确。`);
     }
+  };
+
+  const parseCSVLine = (line: string): string[] => {
+    const result: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      
+      if (char === '"') {
+        inQuotes = !inQuotes;
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    
+    return result;
   };
 
   const handleExport = async () => {
     try {
       const result = await window.electronAPI.dialog.saveFile({
         defaultPath: '设备盘点表.xlsx',
-        filters: [{ name: 'Excel Files', extensions: ['xlsx'] }]
+        filters: [{ name: 'Excel 文件', extensions: ['xlsx'] }]
       });
 
       if (!result.canceled && result.filePath) {
-        const devicesWithDetails = await Promise.all(
-          devices.map(async (device) => {
-            const specs = await window.electronAPI.hardware.getByDevice(device.id);
-            const tags = await window.electronAPI.tags.getByDevice(device.id);
-            
-            const tagMap: Record<string, string> = {};
-            tags.forEach((tag: any) => {
-              tagMap[tag.tag_type] = tag.tag_value || tag.tag_name;
-            });
+        try {
+          const devicesWithDetails = await Promise.all(
+            devices.map(async (device) => {
+              try {
+                const specs = await window.electronAPI.hardware.getByDevice(device.id);
+                const tags = await window.electronAPI.tags.getByDevice(device.id);
+                
+                const tagMap: Record<string, string> = {};
+                tags.forEach((tag: any) => {
+                  tagMap[tag.tag_type] = tag.tag_value || tag.tag_name;
+                });
 
-            return {
-              '主机名': device.hostname,
-              'IP地址': device.ip_address || '',
-              'MAC地址': device.mac_address || '',
-              '序列号': device.serial_number || '',
-              '部门': device.department || '',
-              '状态': device.status === 'online' ? '在线' : device.status === 'retired' ? '退役' : '离线',
-              '最后巡检时间': device.last_inspection_time ? new Date(device.last_inspection_time).toLocaleDateString('zh-CN') : '',
-              '处理器': specs?.processor || '',
-              '内存': specs?.memory || '',
-              '磁盘': specs?.disk || '',
-              '显卡': specs?.graphics || '',
-              '操作系统': specs?.os_info || '',
-              '网络信息': specs?.network_info || '',
-              '主要软件': specs?.software_list || '',
-              '用途': tagMap['purpose'] || '',
-              '责任人': tagMap['owner'] || '',
-              '位置': tagMap['location'] || '',
-              '保修信息': tagMap['warranty'] || ''
-            };
-          })
-        );
+                return {
+                  '主机名': device.hostname || '',
+                  'IP地址': device.ip_address || '',
+                  'MAC地址': device.mac_address || '',
+                  '序列号': device.serial_number || '',
+                  '部门': device.department || '',
+                  '状态': device.status === 'online' ? '在线' : device.status === 'retired' ? '退役' : '离线',
+                  '最后巡检时间': device.last_inspection_time ? new Date(device.last_inspection_time).toLocaleDateString('zh-CN') : '',
+                  '处理器': specs?.processor || '',
+                  '内存': specs?.memory || '',
+                  '磁盘': specs?.disk || '',
+                  '显卡': specs?.graphics || '',
+                  '操作系统': specs?.os_info || '',
+                  '网络信息': specs?.network_info || '',
+                  '主要软件': specs?.software_list || '',
+                  '用途': tagMap['purpose'] || '',
+                  '责任人': tagMap['owner'] || '',
+                  '位置': tagMap['location'] || '',
+                  '保修信息': tagMap['warranty'] || ''
+                };
+              } catch (error) {
+                return {
+                  '主机名': device.hostname || '',
+                  'IP地址': device.ip_address || '',
+                  'MAC地址': device.mac_address || '',
+                  '序列号': device.serial_number || '',
+                  '部门': device.department || '',
+                  '状态': device.status === 'online' ? '在线' : device.status === 'retired' ? '退役' : '离线',
+                  '最后巡检时间': '',
+                  '处理器': '',
+                  '内存': '',
+                  '磁盘': '',
+                  '显卡': '',
+                  '操作系统': '',
+                  '网络信息': '',
+                  '主要软件': '',
+                  '用途': '',
+                  '责任人': '',
+                  '位置': '',
+                  '保修信息': ''
+                };
+              }
+            })
+          );
 
-        const worksheet = XLSX.utils.json_to_sheet(devicesWithDetails);
+          const worksheet = XLSX.utils.json_to_sheet(devicesWithDetails);
 
-        const colWidths = [
-          { wch: 20 }, { wch: 15 }, { wch: 18 }, { wch: 20 }, { wch: 12 },
-          { wch: 8 }, { wch: 15 }, { wch: 25 }, { wch: 12 }, { wch: 30 },
-          { wch: 20 }, { wch: 30 }, { wch: 30 }, { wch: 30 }, { wch: 12 },
-          { wch: 12 }, { wch: 15 }, { wch: 20 }
-        ];
-        worksheet['!cols'] = colWidths;
+          const colWidths = [
+            { wch: 20 }, { wch: 15 }, { wch: 18 }, { wch: 20 }, { wch: 12 },
+            { wch: 8 }, { wch: 15 }, { wch: 25 }, { wch: 12 }, { wch: 30 },
+            { wch: 20 }, { wch: 30 }, { wch: 30 }, { wch: 30 }, { wch: 12 },
+            { wch: 12 }, { wch: 15 }, { wch: 20 }
+          ];
+          worksheet['!cols'] = colWidths;
 
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, '设备列表');
+          const workbook = XLSX.utils.book_new();
+          XLSX.utils.book_append_sheet(workbook, worksheet, '设备列表');
 
-        const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-        const base64 = XLSX.utils.encode_as_base64(excelBuffer);
+          const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
 
-        await window.electronAPI.file.write(result.filePath, base64);
-        alert(`导出成功！共导出 ${devicesWithDetails.length} 台设备的信息`);
+          await window.electronAPI.file.writeBinary(result.filePath, Array.from(excelBuffer));
+          alert(`导出成功！共导出 ${devicesWithDetails.length} 台设备的信息`);
+        } catch (writeError: any) {
+          alert(`文件保存失败：${writeError.message}\n请检查保存路径是否可写，或尝试更换保存位置。`);
+        }
       }
-    } catch (error) {
-      console.error('Error exporting file:', error);
-      alert('导出失败：' + (error as Error).message);
+    } catch (error: any) {
+      console.error('导出失败:', error);
+      alert(`导出失败：${error.message || '未知错误'}`);
     }
   };
 
