@@ -2,11 +2,29 @@ import { useEffect, useState } from 'react';
 import { useUIStore } from '../stores/uiStore';
 import type { Device, HardwareSpecs, Tag } from '../types';
 
+interface Snapshot {
+  id: number;
+  device_id: number;
+  snapshot_data: string;
+  created_at: string;
+}
+
+interface SnapshotComparison {
+  field: string;
+  oldValue: string;
+  newValue: string;
+}
+
 export default function DeviceDetailPage() {
   const { setCurrentPage } = useUIStore();
   const [device, setDevice] = useState<Device | null>(null);
   const [hardwareSpecs, setHardwareSpecs] = useState<HardwareSpecs | null>(null);
   const [tags, setTags] = useState<Tag[]>([]);
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [selectedSnapshots, setSelectedSnapshots] = useState<number[]>([]);
+  const [showSnapshotHistory, setShowSnapshotHistory] = useState(false);
+  const [snapshotComparison, setSnapshotComparison] = useState<SnapshotComparison[]>([]);
+  const [showComparison, setShowComparison] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -28,6 +46,9 @@ export default function DeviceDetailPage() {
 
       const deviceTags = await window.electronAPI.tags.getByDevice(deviceId);
       setTags(deviceTags || []);
+
+      const deviceSnapshots = await window.electronAPI.snapshots.getByDevice(deviceId);
+      setSnapshots(deviceSnapshots || []);
     } catch (error) {
       console.error('Error fetching device data:', error);
     } finally {
@@ -40,11 +61,67 @@ export default function DeviceDetailPage() {
     
     try {
       await window.electronAPI.hardware.saveSnapshot(device.id, hardwareSpecs);
+      const deviceSnapshots = await window.electronAPI.snapshots.getByDevice(device.id);
+      setSnapshots(deviceSnapshots || []);
       alert('快照保存成功！');
     } catch (error) {
       console.error('Error saving snapshot:', error);
       alert('快照保存失败！');
     }
+  };
+
+  const handleSnapshotSelect = (snapshotId: number) => {
+    if (selectedSnapshots.includes(snapshotId)) {
+      setSelectedSnapshots(selectedSnapshots.filter(id => id !== snapshotId));
+    } else if (selectedSnapshots.length < 2) {
+      setSelectedSnapshots([...selectedSnapshots, snapshotId]);
+    } else {
+      setSelectedSnapshots([selectedSnapshots[1], snapshotId]);
+    }
+  };
+
+  const handleCompareSnapshots = () => {
+    if (selectedSnapshots.length !== 2) {
+      alert('请选择两条快照记录进行对比');
+      return;
+    }
+
+    const snap1 = snapshots.find(s => s.id === selectedSnapshots[0]);
+    const snap2 = snapshots.find(s => s.id === selectedSnapshots[1]);
+
+    if (!snap1 || !snap2) return;
+
+    const older = new Date(snap1.created_at) < new Date(snap2.created_at) ? snap1 : snap2;
+    const newer = new Date(snap1.created_at) < new Date(snap2.created_at) ? snap2 : snap1;
+
+    const olderData = JSON.parse(older.snapshot_data);
+    const newerData = JSON.parse(newer.snapshot_data);
+
+    const changes: SnapshotComparison[] = [];
+    const compareFields = [
+      { key: 'processor', label: '处理器' },
+      { key: 'memory', label: '内存' },
+      { key: 'disk', label: '磁盘' },
+      { key: 'graphics', label: '显卡' },
+      { key: 'os_info', label: '操作系统' },
+      { key: 'software_list', label: '主要软件' },
+      { key: 'network_info', label: '网络信息' }
+    ];
+
+    compareFields.forEach(field => {
+      const oldVal = olderData[field.key] || '';
+      const newVal = newerData[field.key] || '';
+      if (oldVal !== newVal) {
+        changes.push({
+          field: field.label,
+          oldValue: oldVal || '(无)',
+          newValue: newVal || '(无)'
+        });
+      }
+    });
+
+    setSnapshotComparison(changes);
+    setShowComparison(true);
   };
 
   const getTagTypeName = (type: string) => {
@@ -261,6 +338,121 @@ export default function DeviceDetailPage() {
           <p className="text-gray-500 dark:text-gray-400">暂无标签</p>
         )}
       </div>
+
+      <div className="card">
+        <div className="flex items-center justify-between mb-4">
+          <h4 className="text-lg font-semibold text-gray-800 dark:text-white">快照历史</h4>
+          <button
+            onClick={() => setShowSnapshotHistory(!showSnapshotHistory)}
+            className="text-primary-600 hover:text-primary-800 text-sm font-medium"
+          >
+            {showSnapshotHistory ? '收起' : '展开'}
+          </button>
+        </div>
+
+        {showSnapshotHistory && (
+          <>
+            {snapshots.length === 0 ? (
+              <p className="text-gray-500 dark:text-gray-400">暂无快照记录，点击"保存快照"创建第一条记录</p>
+            ) : (
+              <>
+                <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg mb-4">
+                  <p className="text-sm text-blue-800 dark:text-blue-300">
+                    💡 选择两条快照记录后可进行配置对比，查看硬件配置变化
+                  </p>
+                </div>
+
+                <div className="space-y-2 mb-4">
+                  {snapshots.map((snapshot) => {
+                    const snapshotData = JSON.parse(snapshot.snapshot_data);
+                    return (
+                      <div
+                        key={snapshot.id}
+                        onClick={() => handleSnapshotSelect(snapshot.id)}
+                        className={`p-3 border rounded-lg cursor-pointer transition-all ${
+                          selectedSnapshots.includes(snapshot.id)
+                            ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20'
+                            : 'border-gray-200 dark:border-gray-700 hover:border-primary-300'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-6 h-6 border-2 rounded flex items-center justify-center ${
+                              selectedSnapshots.includes(snapshot.id)
+                                ? 'border-primary-600 bg-primary-600'
+                                : 'border-gray-300'
+                            }`}>
+                              {selectedSnapshots.includes(snapshot.id) && (
+                                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                </svg>
+                              )}
+                            </div>
+                            <div>
+                              <p className="text-sm font-medium text-gray-800 dark:text-white">
+                                {new Date(snapshot.created_at).toLocaleString('zh-CN')}
+                              </p>
+                              <p className="text-xs text-gray-500 dark:text-gray-400">
+                                处理器: {snapshotData.processor || '无'} | 内存: {snapshotData.memory || '无'}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {selectedSnapshots.length === 2 && (
+                  <button
+                    onClick={handleCompareSnapshots}
+                    className="btn-primary w-full"
+                  >
+                    对比选中的两条快照
+                  </button>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </div>
+
+      {showComparison && snapshotComparison.length > 0 && (
+        <div className="card">
+          <div className="flex items-center justify-between mb-4">
+            <h4 className="text-lg font-semibold text-gray-800 dark:text-white">配置变化对比</h4>
+            <button
+              onClick={() => setShowComparison(false)}
+              className="text-gray-500 hover:text-gray-700"
+            >
+              关闭
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            {snapshotComparison.map((change, index) => (
+              <div key={index} className="flex items-center gap-4 text-sm p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                <span className="w-24 font-medium text-gray-600 dark:text-gray-400">{change.field}</span>
+                <span className="flex-1 px-2 py-1 bg-red-100 dark:bg-red-900/30 text-red-800 dark:text-red-300 rounded truncate" title={change.oldValue}>
+                  {change.oldValue}
+                </span>
+                <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
+                <span className="flex-1 px-2 py-1 bg-green-100 dark:bg-green-900/30 text-green-800 dark:text-green-300 rounded truncate" title={change.newValue}>
+                  {change.newValue}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {showComparison && snapshotComparison.length === 0 && (
+        <div className="card text-center py-8 text-gray-500 dark:text-gray-400">
+          两次快照记录无配置变化
+        </div>
+      )}
     </div>
   );
 }

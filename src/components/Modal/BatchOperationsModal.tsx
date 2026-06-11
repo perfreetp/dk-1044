@@ -135,7 +135,18 @@ export default function BatchOperationsModal() {
         const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
 
         await window.electronAPI.file.writeBinary(result.filePath, Array.from(excelBuffer));
-        alert(`盘点表导出成功！共导出 ${devicesWithDetails.length} 台设备的信息`);
+        
+        if (selectedDevicesList.length > 0) {
+          const snapshotName = `批量盘点_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}_${new Date().toLocaleTimeString('zh-CN')}`;
+          await window.electronAPI.inventory.create({
+            name: snapshotName,
+            description: `批量操作导出，共 ${devicesWithDetails.length} 台设备`,
+            devices: devicesWithDetails
+          });
+          alert(`盘点表导出成功！共导出 ${devicesWithDetails.length} 台设备的信息，已保存到盘点历史`);
+        } else {
+          alert(`盘点表导出成功！共导出 ${devicesWithDetails.length} 台设备的信息`);
+        }
       } catch (writeError: any) {
         alert(`文件保存失败：${writeError.message}\n请检查保存路径是否可写，或尝试更换保存位置。`);
       }

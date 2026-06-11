@@ -150,10 +150,11 @@ export default function InventoryHistoryPage() {
         const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
         await window.electronAPI.file.writeBinary(result.filePath, Array.from(excelBuffer));
 
+        const devicesWithValidHostnames = devicesWithDetails.filter((d: any) => d['主机名'] && d['主机名'].trim() !== '');
         const snapshotName = `设备盘点_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}_${new Date().toLocaleTimeString('zh-CN')}`;
         await window.electronAPI.inventory.create({
           name: snapshotName,
-          description: `手动导出盘点表，共 ${devicesWithDetails.length} 台设备`,
+          description: `手动导出盘点表，共 ${devicesWithValidHostnames.length} 台设备`,
           devices: devicesWithDetails
         });
 
@@ -194,10 +195,13 @@ export default function InventoryHistoryPage() {
     const older = new Date(inv1.created_at) < new Date(inv2.created_at) ? inv1 : inv2;
     const newer = new Date(inv1.created_at) < new Date(inv2.created_at) ? inv2 : inv1;
 
-    const olderMap = new Map(older.devices.map((d: any) => [d['主机名'], d]));
+    const olderDevices = older.devices.filter((d: any) => d['主机名'] && d['主机名'].trim() !== '');
+    const newerDevices = newer.devices.filter((d: any) => d['主机名'] && d['主机名'].trim() !== '');
+
+    const olderMap = new Map(olderDevices.map((d: any) => [d['主机名'], d]));
     const results: ComparisonResult[] = [];
 
-    newer.devices.forEach((newerDevice: any) => {
+    newerDevices.forEach((newerDevice: any) => {
       const olderDevice = olderMap.get(newerDevice['主机名']);
       if (!olderDevice) {
         results.push({
@@ -223,8 +227,8 @@ export default function InventoryHistoryPage() {
       }
     });
 
-    older.devices.forEach((olderDevice: any) => {
-      const existsInNewer = newer.devices.some((d: any) => d['主机名'] === olderDevice['主机名']);
+    olderDevices.forEach((olderDevice: any) => {
+      const existsInNewer = newerDevices.some((d: any) => d['主机名'] === olderDevice['主机名']);
       if (!existsInNewer) {
         results.push({
           hostname: olderDevice['主机名'],

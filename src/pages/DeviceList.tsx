@@ -159,11 +159,20 @@ export default function DeviceListPage() {
 
           await window.electronAPI.file.writeBinary(result.filePath, Array.from(excelBuffer));
           
+          if (devices.length > 0) {
+            const snapshotName = `设备盘点_${new Date().toLocaleDateString('zh-CN').replace(/\//g, '-')}_${new Date().toLocaleTimeString('zh-CN')}`;
+            await window.electronAPI.inventory.create({
+              name: snapshotName,
+              description: `从设备列表导出，共 ${devicesWithDetails.length} 台设备`,
+              devices: devicesWithDetails
+            });
+          }
+          
           const exportCount = devices.length > 0 ? devicesWithDetails.length : 0;
           if (devices.length === 0) {
             alert('导出成功！已生成空白模板表，可直接填写设备信息');
           } else {
-            alert(`导出成功！共导出 ${exportCount} 台设备的信息`);
+            alert(`导出成功！共导出 ${exportCount} 台设备的信息，已保存到盘点历史`);
           }
         } catch (writeError: any) {
           alert(`文件保存失败：${writeError.message}\n请检查保存路径是否可写，或尝试更换保存位置。`);

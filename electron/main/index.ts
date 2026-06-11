@@ -177,16 +177,21 @@ function getRuleThreshold(type: string): number {
 function detectAnomalies() {
   if (!db) return;
 
-  const existingPendingAnomalies = new Map<string, any>();
+  const existingAnomalies = new Map<string, any>();
+  db.anomalies.forEach(a => {
+    const key = generateAnomalyKey(a.device_id, a.anomaly_type, a.anomaly_description);
+    existingAnomalies.set(key, a);
+  });
+
+  const processedKeys = new Set<string>();
   db.anomalies
-    .filter(a => a.status === 'pending')
+    .filter(a => a.status === 'resolved' || a.status === 'ignored')
     .forEach(a => {
       const key = generateAnomalyKey(a.device_id, a.anomaly_type, a.anomaly_description);
-      existingPendingAnomalies.set(key, a);
+      processedKeys.add(key);
     });
 
-  const currentAnomalyKeys = new Set<string>();
-  const anomaliesToKeep = db.anomalies.filter(a => a.status !== 'pending');
+  const anomaliesToKeep = db.anomalies.filter(a => a.status === 'pending');
 
   const lowMemoryThreshold = getRuleThreshold('low_memory');
   const lowDiskThreshold = getRuleThreshold('low_disk');
@@ -204,8 +209,10 @@ function detectAnomalies() {
       if (memSize > 0 && memSize < lowMemoryThreshold) {
         const desc = `${device.hostname} 内存容量 ${specs.memory}，低于${lowMemoryThreshold}GB`;
         const key = generateAnomalyKey(device.id, 'low_config', desc);
-        currentAnomalyKeys.add(key);
-        if (!existingPendingAnomalies.has(key)) {
+        if (!existingAnomalies.has(key)) {
+          if (processedKeys.has(key)) {
+            continue;
+          }
           anomaliesToKeep.push({
             id: db!.nextIds.anomalies++,
             device_id: device.id,
@@ -222,8 +229,10 @@ function detectAnomalies() {
       if (diskSize > 0 && diskSize < lowDiskThreshold) {
         const desc = `${device.hostname} 磁盘容量 ${specs.disk}，低于${lowDiskThreshold}GB`;
         const key = generateAnomalyKey(device.id, 'low_config', desc);
-        currentAnomalyKeys.add(key);
-        if (!existingPendingAnomalies.has(key)) {
+        if (!existingAnomalies.has(key)) {
+          if (processedKeys.has(key)) {
+            continue;
+          }
           anomaliesToKeep.push({
             id: db!.nextIds.anomalies++,
             device_id: device.id,
@@ -240,8 +249,10 @@ function detectAnomalies() {
       if (freePercent < diskWarningThreshold) {
         const desc = `${device.hostname} 磁盘可用空间 ${freePercent}%，低于${diskWarningThreshold}%`;
         const key = generateAnomalyKey(device.id, 'disk_warning', desc);
-        currentAnomalyKeys.add(key);
-        if (!existingPendingAnomalies.has(key)) {
+        if (!existingAnomalies.has(key)) {
+          if (processedKeys.has(key)) {
+            continue;
+          }
           anomaliesToKeep.push({
             id: db!.nextIds.anomalies++,
             device_id: device.id,
@@ -259,8 +270,10 @@ function detectAnomalies() {
     if (!hasOwner) {
       const desc = `${device.hostname} 未登记责任人`;
       const key = generateAnomalyKey(device.id, 'unassigned_owner', desc);
-      currentAnomalyKeys.add(key);
-      if (!existingPendingAnomalies.has(key)) {
+      if (!existingAnomalies.has(key)) {
+        if (processedKeys.has(key)) {
+          continue;
+        }
         anomaliesToKeep.push({
           id: db!.nextIds.anomalies++,
           device_id: device.id,
@@ -277,8 +290,10 @@ function detectAnomalies() {
     if (hostnameCount > 1) {
       const desc = `${device.hostname} 存在重复主机名（共${hostnameCount}台设备）`;
       const key = generateAnomalyKey(device.id, 'duplicate_hostname', desc);
-      currentAnomalyKeys.add(key);
-      if (!existingPendingAnomalies.has(key)) {
+      if (!existingAnomalies.has(key)) {
+        if (processedKeys.has(key)) {
+          continue;
+        }
         anomaliesToKeep.push({
           id: db!.nextIds.anomalies++,
           device_id: device.id,
@@ -301,8 +316,10 @@ function detectAnomalies() {
         if (daysUntilExpiry > 0 && daysUntilExpiry <= warrantyDaysThreshold) {
           const desc = `${device.hostname} 保修将在${daysUntilExpiry}天后到期（${warrantyTag.tag_value}）`;
           const key = generateAnomalyKey(device.id, 'warranty_expiring', desc);
-          currentAnomalyKeys.add(key);
-          if (!existingPendingAnomalies.has(key)) {
+          if (!existingAnomalies.has(key)) {
+            if (processedKeys.has(key)) {
+              continue;
+            }
             anomaliesToKeep.push({
               id: db!.nextIds.anomalies++,
               device_id: device.id,
