@@ -3,6 +3,12 @@ import { useDeviceStore } from '../stores/deviceStore';
 import { useUIStore } from '../stores/uiStore';
 import * as XLSX from 'xlsx';
 
+interface ImportResult {
+  success: number;
+  failed: number;
+  failedDevices: string[];
+}
+
 export default function DeviceListPage() {
   const {
     devices,
@@ -21,6 +27,7 @@ export default function DeviceListPage() {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [departments, setDepartments] = useState<string[]>([]);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
 
   useEffect(() => {
     fetchDevices();
@@ -40,11 +47,36 @@ export default function DeviceListPage() {
     setFilters({ ...filters, search: searchTerm });
   };
 
+  const getFieldValue = (row: any, ...candidates: string[]): string => {
+    for (const key of candidates) {
+      const value = row[key] || row[key.toLowerCase()] || row[key.toUpperCase()];
+      if (value) return String(value).trim();
+    }
+    return '';
+  };
+
+  const parseHardwareSpecs = (row: any) => {
+    return {
+      processor: getFieldValue(row, 'processor', 'Processor', '处理器', 'cpu', 'CPU'),
+      memory: getFieldValue(row, 'memory', 'Memory', '内存', 'mem', 'RAM'),
+      disk: getFieldValue(row, 'disk', 'Disk', '磁盘', 'storage', '硬盘', '存储'),
+      graphics: getFieldValue(row, 'graphics', 'Graphics', '显卡', 'gpu', 'GPU', 'display', '显示器'),
+      os_info: getFieldValue(row, 'os_info', 'os', 'OS', '操作系统', 'system', 'System'),
+      network_info: getFieldValue(row, 'network_info', 'network', 'Network', '网络', '网卡'),
+      software_list: getFieldValue(row, 'software', 'Software', 'software_list', '软件', '主要软件', 'installed_software'),
+      serial_number: getFieldValue(row, 'serial_number', 'serial', 'Serial', '序列号', 'sn', 'SN')
+    };
+  };
+
+  const hasHardwareInfo = (specs: ReturnType<typeof parseHardwareSpecs>): boolean => {
+    return !!(specs.processor || specs.memory || specs.disk || specs.graphics || specs.os_info);
+  };
+
   const handleImport = async () => {
     try {
       const result = await window.electronAPI.dialog.openFile({
         filters: [
-          { name: 'Excel Files', extensions: ['xlsx', 'xls'] },
+          { name: 'Excel Files', extensions: ['xlsx', 'xls', 'csv'] },
           { name: 'CSV Files', extensions: ['csv'] }
         ]
       });
@@ -53,33 +85,127 @@ export default function DeviceListPage() {
         const filePath = result.filePaths[0];
         const content = await window.electronAPI.file.read(filePath);
         
-        const workbook = XLSX.read(content, { type: 'string' });
-        const sheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[sheetName];
-        const jsonData = XLSX.utils.sheet_to_json(worksheet);
+        let jsonData: any[] = [];
+        
+        if (filePath.toLowerCase().endsWith('.csv')) {
+          const lines = content.split('\n');
+          if (lines.length > 0) {
+            const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+            for (let i = 1; i < lines.length; i++) {
+              if (lines[i].trim()) {
+                const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+                const row: any = {};
+                headers.forEach((header, index) => {
+                  row[header] = values[index] || '';
+                });
+                jsonData.push(row);
+              }
+            }
+          }
+        } else {
+          const workbook = XLSX.read(content, { type: 'string' });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          jsonData = XLSX.utils.sheet_to_json(worksheet);
+        }
+
+        let successCount = 0;
+        let failedCount = 0;
+        const failedDevices: string[] = [];
 
         for (const row of jsonData) {
+          const hostname = getFieldValue(row, 'hostname', 'Hostname', '主机名', 'name', 'Name', 'computer_name');
+          
+          if (!hostname) {
+            continue;
+          }
+
           const deviceData = {
-            hostname: row.hostname || row.Hostname || row['主机名'] || '',
-            ip_address: row.ip_address || row.ip || row['IP地址'] || '',
-            mac_address: row.mac_address || row.mac || row['MAC地址'] || '',
-            serial_number: row.serial_number || row.serial || row['序列号'] || '',
-            department: row.department || row.Department || row['部门'] || '',
-            status: row.status || row.Status || 'offline'
+            hostname: hostname,
+            ip_address: getFieldValue(row, 'ip_address', 'ip', 'IP', 'IP地址', 'ipaddr'),
+            mac_address: getFieldValue(row, 'mac_address', 'mac', 'MAC', 'MAC地址'),
+            serial_number: getFieldValue(row, 'serial_number', 'serial', 'Serial', '序列号', 'sn'),
+            department: getFieldValue(row, 'department', 'Department', '部门', 'dept'),
+            status: getFieldValue(row, 'status', 'Status', '状态') || 'offline',
+            last_inspection_time: new Date().toISOString()
           };
 
-          if (deviceData.hostname) {
-            try {
-              await window.electronAPI.devices.create(deviceData);
-            } catch (error) {
-              console.warn('Error importing device:', error);
+          try {
+            const newDevice = await window.electronAPI.devices.create(deviceData);
+            
+            const hardwareSpecs = parseHardwareSpecs(row);
+            if (hasHardwareInfo(hardwareSpecs)) {
+              await window.electronAPI.hardware.saveSnapshot(newDevice.id, {
+                processor: hardwareSpecs.processor || null,
+                memory: hardwareSpecs.memory || null,
+                disk: hardwareSpecs.disk || null,
+                graphics: hardwareSpecs.graphics || null,
+                os_info: hardwareSpecs.os_info || null,
+                network_info: hardwareSpecs.network_info || null,
+                software_list: hardwareSpecs.software_list || null
+              });
             }
+
+            const warrantyEnd = getFieldValue(row, 'warranty_end', 'warrantyEnd', 'warranty_date', '保修到期', '保修结束日期');
+            if (warrantyEnd) {
+              await window.electronAPI.tags.create({
+                device_id: newDevice.id,
+                tag_type: 'warranty',
+                tag_name: '保修到期日期',
+                tag_value: warrantyEnd
+              });
+            }
+
+            const owner = getFieldValue(row, 'owner', 'Owner', '责任人', 'responsible', '负责人');
+            if (owner) {
+              await window.electronAPI.tags.create({
+                device_id: newDevice.id,
+                tag_type: 'owner',
+                tag_name: '责任人',
+                tag_value: owner
+              });
+            }
+
+            const location = getFieldValue(row, 'location', 'Location', '位置', '地点', '物理位置');
+            if (location) {
+              await window.electronAPI.tags.create({
+                device_id: newDevice.id,
+                tag_type: 'location',
+                tag_name: '位置',
+                tag_value: location
+              });
+            }
+
+            const purpose = getFieldValue(row, 'purpose', 'Purpose', '用途', 'usage', '使用用途');
+            if (purpose) {
+              await window.electronAPI.tags.create({
+                device_id: newDevice.id,
+                tag_type: 'purpose',
+                tag_name: '用途',
+                tag_value: purpose
+              });
+            }
+
+            successCount++;
+          } catch (error) {
+            console.warn('Error importing device:', hostname, error);
+            failedCount++;
+            failedDevices.push(hostname);
           }
         }
 
-        fetchDevices();
-        fetchDepartments();
-        alert('导入成功！');
+        await fetchDevices();
+        await fetchDepartments();
+
+        await window.electronAPI.anomalies.detectAll();
+
+        const resultMessage = `导入完成！成功: ${successCount} 台设备${failedCount > 0 ? `，失败: ${failedCount} 台 (${failedDevices.join(', ')})` : ''}`;
+        setImportResult({
+          success: successCount,
+          failed: failedCount,
+          failedDevices
+        });
+        alert(resultMessage);
       }
     } catch (error) {
       console.error('Error importing file:', error);
@@ -95,29 +221,57 @@ export default function DeviceListPage() {
       });
 
       if (!result.canceled && result.filePath) {
-        const exportData = devices.map(device => ({
-          '主机名': device.hostname,
-          'IP地址': device.ip_address || '',
-          'MAC地址': device.mac_address || '',
-          '序列号': device.serial_number || '',
-          '部门': device.department || '',
-          '状态': device.status,
-          '最后巡检时间': device.last_inspection_time || ''
-        }));
+        const devicesWithDetails = await Promise.all(
+          devices.map(async (device) => {
+            const specs = await window.electronAPI.hardware.getByDevice(device.id);
+            const tags = await window.electronAPI.tags.getByDevice(device.id);
+            
+            const tagMap: Record<string, string> = {};
+            tags.forEach((tag: any) => {
+              tagMap[tag.tag_type] = tag.tag_value || tag.tag_name;
+            });
 
-        const worksheet = XLSX.utils.json_to_sheet(exportData);
+            return {
+              '主机名': device.hostname,
+              'IP地址': device.ip_address || '',
+              'MAC地址': device.mac_address || '',
+              '序列号': device.serial_number || '',
+              '部门': device.department || '',
+              '状态': device.status === 'online' ? '在线' : device.status === 'retired' ? '退役' : '离线',
+              '最后巡检时间': device.last_inspection_time ? new Date(device.last_inspection_time).toLocaleDateString('zh-CN') : '',
+              '处理器': specs?.processor || '',
+              '内存': specs?.memory || '',
+              '磁盘': specs?.disk || '',
+              '显卡': specs?.graphics || '',
+              '操作系统': specs?.os_info || '',
+              '网络信息': specs?.network_info || '',
+              '主要软件': specs?.software_list || '',
+              '用途': tagMap['purpose'] || '',
+              '责任人': tagMap['owner'] || '',
+              '位置': tagMap['location'] || '',
+              '保修信息': tagMap['warranty'] || ''
+            };
+          })
+        );
+
+        const worksheet = XLSX.utils.json_to_sheet(devicesWithDetails);
+
+        const colWidths = [
+          { wch: 20 }, { wch: 15 }, { wch: 18 }, { wch: 20 }, { wch: 12 },
+          { wch: 8 }, { wch: 15 }, { wch: 25 }, { wch: 12 }, { wch: 30 },
+          { wch: 20 }, { wch: 30 }, { wch: 30 }, { wch: 30 }, { wch: 12 },
+          { wch: 12 }, { wch: 15 }, { wch: 20 }
+        ];
+        worksheet['!cols'] = colWidths;
+
         const workbook = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(workbook, worksheet, '设备列表');
 
-        const excelContent = XLSX.write(workbook, { bookType: 'xlsx', type: 'binary' });
-        const buffer = new ArrayBuffer(excelContent.length);
-        const view = new Uint8Array(buffer);
-        for (let i = 0; i < excelContent.length; i++) {
-          view[i] = excelContent.charCodeAt(i) & 0xFF;
-        }
+        const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+        const base64 = XLSX.utils.encode_as_base64(excelBuffer);
 
-        await window.electronAPI.file.write(result.filePath, new TextDecoder().decode(buffer));
-        alert('导出成功！');
+        await window.electronAPI.file.write(result.filePath, base64);
+        alert(`导出成功！共导出 ${devicesWithDetails.length} 台设备的信息`);
       }
     } catch (error) {
       console.error('Error exporting file:', error);

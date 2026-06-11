@@ -22,10 +22,12 @@ const electronAPI = {
     resolve: (id: number) => ipcRenderer.invoke('anomalies:resolve', id),
     ignore: (id: number) => ipcRenderer.invoke('anomalies:ignore', id),
     create: (anomalyData: any) => ipcRenderer.invoke('anomalies:create', anomalyData),
+    detectAll: () => ipcRenderer.invoke('anomalies:detectAll'),
   },
   snapshots: {
     getByDevice: (deviceId: number) => ipcRenderer.invoke('snapshots:getByDevice', deviceId),
     save: (deviceId: number, snapshotData: any) => ipcRenderer.invoke('snapshots:save', deviceId, snapshotData),
+    saveBatch: (deviceIds: number[]) => ipcRenderer.invoke('snapshots:saveBatch', deviceIds),
   },
   transfer: {
     create: (transferData: any) => ipcRenderer.invoke('transfer:create', transferData),

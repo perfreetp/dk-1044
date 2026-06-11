@@ -4,7 +4,7 @@ import { useDeviceStore } from '../../stores/deviceStore';
 
 export default function AddDeviceModal() {
   const { closeModal } = useUIStore();
-  const { addDevice } = useDeviceStore();
+  const { addDevice, fetchDevices } = useDeviceStore();
   const [loading, setLoading] = useState(false);
   const [formData, setFormData] = useState({
     hostname: '',
@@ -26,6 +26,8 @@ export default function AddDeviceModal() {
     setLoading(true);
     try {
       await addDevice(formData);
+      await window.electronAPI.anomalies.detectAll();
+      await fetchDevices();
       closeModal('add-device');
     } catch (error) {
       console.error('Error adding device:', error);

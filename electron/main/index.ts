@@ -93,6 +93,182 @@ function saveDatabase() {
   }
 }
 
+function parseMemorySize(memStr: string): number {
+  if (!memStr) return 0;
+  const match = memStr.toUpperCase().match(/(\d+(?:\.\d+)?)\s*(GB|MB|TB)/i);
+  if (match) {
+    const value = parseFloat(match[1]);
+    const unit = match[2].toUpperCase();
+    if (unit === 'GB') return value;
+    if (unit === 'MB') return value / 1024;
+    if (unit === 'TB') return value * 1024;
+  }
+  const numMatch = memStr.match(/\d+/);
+  return numMatch ? parseInt(numMatch[0]) : 0;
+}
+
+function parseDiskSize(diskStr: string): number {
+  if (!diskStr) return 0;
+  const match = diskStr.toUpperCase().match(/(\d+(?:\.\d+)?)\s*(GB|MB|TB)/i);
+  if (match) {
+    const value = parseFloat(match[1]);
+    const unit = match[2].toUpperCase();
+    if (unit === 'GB') return value;
+    if (unit === 'MB') return value / 1024;
+    if (unit === 'TB') return value * 1024;
+  }
+  const numMatch = diskStr.match(/\d+/);
+  return numMatch ? parseInt(numMatch[0]) : 0;
+}
+
+function parseDiskFreePercent(diskStr: string): number {
+  if (!diskStr) return 100;
+  const percentMatch = diskStr.match(/(\d+)%/);
+  if (percentMatch) {
+    return parseInt(percentMatch[1]);
+  }
+  return 100;
+}
+
+function detectAnomalies() {
+  if (!db) return;
+
+  const existingAnomalyKeys = new Map();
+  db.anomalies
+    .filter(a => a.status === 'pending')
+    .forEach(a => {
+      const key = `${a.device_id}_${a.anomaly_type}`;
+      existingAnomalyKeys.set(key, a.id);
+    });
+
+  const newAnomalyKeys = new Set<string>();
+  const anomaliesToKeep = db.anomalies.filter(a => a.status !== 'pending');
+
+  db.devices.forEach(device => {
+    const specs = db!.hardware_specs
+      .filter(h => h.device_id === device.id)
+      .sort((a, b) => new Date(b.snapshot_time).getTime() - new Date(a.snapshot_time).getTime())[0];
+    const tags = db!.tags.filter(t => t.device_id === device.id);
+
+    if (specs) {
+      const memSize = parseMemorySize(specs.memory);
+      if (memSize > 0 && memSize < 8) {
+        const key = `${device.id}_low_config`;
+        newAnomalyKeys.add(key);
+        if (!existingAnomalyKeys.has(key)) {
+          anomaliesToKeep.push({
+            id: db!.nextIds.anomalies++,
+            device_id: device.id,
+            anomaly_type: 'low_config',
+            anomaly_description: `${device.hostname} 内存容量 ${specs.memory}，低于8GB`,
+            status: 'pending',
+            detected_at: new Date().toISOString(),
+            resolved_at: null
+          });
+        }
+      }
+
+      const diskSize = parseDiskSize(specs.disk);
+      if (diskSize > 0 && diskSize < 256) {
+        const key = `${device.id}_low_disk`;
+        newAnomalyKeys.add(key);
+        if (!existingAnomalyKeys.has(key)) {
+          anomaliesToKeep.push({
+            id: db!.nextIds.anomalies++,
+            device_id: device.id,
+            anomaly_type: 'low_config',
+            anomaly_description: `${device.hostname} 磁盘容量 ${specs.disk}，低于256GB`,
+            status: 'pending',
+            detected_at: new Date().toISOString(),
+            resolved_at: null
+          });
+        }
+      }
+
+      const freePercent = parseDiskFreePercent(specs.disk);
+      if (freePercent < 10) {
+        const key = `${device.id}_disk_warning`;
+        newAnomalyKeys.add(key);
+        if (!existingAnomalyKeys.has(key)) {
+          anomaliesToKeep.push({
+            id: db!.nextIds.anomalies++,
+            device_id: device.id,
+            anomaly_type: 'disk_warning',
+            anomaly_description: `${device.hostname} 磁盘可用空间 ${freePercent}%，低于10%`,
+            status: 'pending',
+            detected_at: new Date().toISOString(),
+            resolved_at: null
+          });
+        }
+      }
+    }
+
+    const hasOwner = tags.some(t => t.tag_type === 'owner' && t.tag_value);
+    if (!hasOwner) {
+      const key = `${device.id}_unassigned_owner`;
+      newAnomalyKeys.add(key);
+      if (!existingAnomalyKeys.has(key)) {
+        anomaliesToKeep.push({
+          id: db!.nextIds.anomalies++,
+          device_id: device.id,
+          anomaly_type: 'unassigned_owner',
+          anomaly_description: `${device.hostname} 未登记责任人`,
+          status: 'pending',
+          detected_at: new Date().toISOString(),
+          resolved_at: null
+        });
+      }
+    }
+
+    const hostnameCount = db!.devices.filter(d => d.hostname === device.hostname).length;
+    if (hostnameCount > 1) {
+      const key = `${device.id}_duplicate_hostname`;
+      newAnomalyKeys.add(key);
+      if (!existingAnomalyKeys.has(key)) {
+        anomaliesToKeep.push({
+          id: db!.nextIds.anomalies++,
+          device_id: device.id,
+          anomaly_type: 'duplicate_hostname',
+          anomaly_description: `${device.hostname} 存在重复主机名（共${hostnameCount}台设备）`,
+          status: 'pending',
+          detected_at: new Date().toISOString(),
+          resolved_at: null
+        });
+      }
+    }
+
+    const warrantyTag = tags.find(t => t.tag_type === 'warranty' && t.tag_name === '保修到期日期');
+    if (warrantyTag && warrantyTag.tag_value) {
+      try {
+        const warrantyDate = new Date(warrantyTag.tag_value);
+        const now = new Date();
+        const daysUntilExpiry = Math.ceil((warrantyDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        
+        if (daysUntilExpiry > 0 && daysUntilExpiry <= 30) {
+          const key = `${device.id}_warranty_expiring`;
+          newAnomalyKeys.add(key);
+          if (!existingAnomalyKeys.has(key)) {
+            anomaliesToKeep.push({
+              id: db!.nextIds.anomalies++,
+              device_id: device.id,
+              anomaly_type: 'warranty_expiring',
+              anomaly_description: `${device.hostname} 保修将在${daysUntilExpiry}天后到期（${warrantyTag.tag_value}）`,
+              status: 'pending',
+              detected_at: new Date().toISOString(),
+              resolved_at: null
+            });
+          }
+        }
+      } catch (e) {
+        log.warn('Error parsing warranty date:', warrantyTag.tag_value);
+      }
+    }
+  });
+
+  db.anomalies = anomaliesToKeep;
+  saveDatabase();
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -186,6 +362,7 @@ function setupIpcHandlers() {
       };
       db!.devices.push(newDevice);
       saveDatabase();
+      detectAnomalies();
       return newDevice;
     } catch (error) {
       log.error('Error creating device:', error);
@@ -203,6 +380,7 @@ function setupIpcHandlers() {
           updated_at: new Date().toISOString()
         };
         saveDatabase();
+        detectAnomalies();
         return db!.devices[index];
       }
       throw new Error('Device not found');
@@ -255,6 +433,7 @@ function setupIpcHandlers() {
       };
       db!.hardware_specs.push(newSpec);
       saveDatabase();
+      detectAnomalies();
       return { id: newSpec.id };
     } catch (error) {
       log.error('Error saving hardware snapshot:', error);
@@ -285,6 +464,7 @@ function setupIpcHandlers() {
       };
       db!.tags.push(newTag);
       saveDatabase();
+      detectAnomalies();
       return newTag;
     } catch (error) {
       log.error('Error creating tag:', error);
@@ -301,6 +481,7 @@ function setupIpcHandlers() {
           ...tagData
         };
         saveDatabase();
+        detectAnomalies();
         return db!.tags[index];
       }
       throw new Error('Tag not found');
@@ -314,6 +495,7 @@ function setupIpcHandlers() {
     try {
       db!.tags = db!.tags.filter(t => t.id !== id);
       saveDatabase();
+      detectAnomalies();
       return { success: true };
     } catch (error) {
       log.error('Error deleting tag:', error);
@@ -334,6 +516,16 @@ function setupIpcHandlers() {
       }).sort((a, b) => new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime());
     } catch (error) {
       log.error('Error fetching anomalies:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('anomalies:detectAll', async () => {
+    try {
+      detectAnomalies();
+      return { success: true };
+    } catch (error) {
+      log.error('Error detecting anomalies:', error);
       throw error;
     }
   });
@@ -463,6 +655,46 @@ function setupIpcHandlers() {
       return { id: newSnapshot.id };
     } catch (error) {
       log.error('Error saving snapshot:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('snapshots:saveBatch', async (event, deviceIds: number[]) => {
+    try {
+      const results: { deviceId: number; success: boolean; message: string }[] = [];
+
+      for (const deviceId of deviceIds) {
+        const device = db!.devices.find(d => d.id === deviceId);
+        const specs = db!.hardware_specs
+          .filter(h => h.device_id === deviceId)
+          .sort((a, b) => new Date(b.snapshot_time).getTime() - new Date(a.snapshot_time).getTime())[0];
+
+        if (specs) {
+          const newSnapshot = {
+            id: db!.nextIds.snapshots++,
+            device_id: deviceId,
+            snapshot_data: JSON.stringify(specs),
+            created_at: new Date().toISOString()
+          };
+          db!.snapshots.push(newSnapshot);
+          results.push({
+            deviceId,
+            success: true,
+            message: `${device?.hostname || `设备#${deviceId}`} 快照保存成功`
+          });
+        } else {
+          results.push({
+            deviceId,
+            success: false,
+            message: `${device?.hostname || `设备#${deviceId}`} 无硬件信息，跳过保存`
+          });
+        }
+      }
+
+      saveDatabase();
+      return results;
+    } catch (error) {
+      log.error('Error saving batch snapshots:', error);
       throw error;
     }
   });
