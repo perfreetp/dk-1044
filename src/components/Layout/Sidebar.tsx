@@ -5,6 +5,8 @@ const menuItems = [
   { id: 'device-detail', label: '设备详情', icon: 'M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z' },
   { id: 'tag-manager', label: '标签管理', icon: 'M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z' },
   { id: 'anomaly-dashboard', label: '异常汇总', icon: 'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z' },
+  { id: 'inventory-history', label: '盘点历史', icon: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z' },
+  { id: 'import-preview', label: '导入预览', icon: 'M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12' },
 ];
 
 export default function Sidebar() {
@@ -51,7 +53,7 @@ export default function Sidebar() {
         <div className="absolute bottom-0 left-0 w-64 p-4 border-t border-gray-200 dark:border-gray-700">
           <div className="text-xs text-gray-500 dark:text-gray-400">
             <p>企业主机资产画像客户端</p>
-            <p className="mt-1">版本 1.0.0</p>
+            <p className="mt-1">版本 1.0.2</p>
           </div>
         </div>
       )}

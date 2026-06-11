@@ -6,6 +6,14 @@ import fs from 'fs';
 log.initialize();
 log.info('Application starting...');
 
+interface AnomalyRule {
+  id: string;
+  name: string;
+  type: 'low_memory' | 'low_disk' | 'disk_warning' | 'warranty_days';
+  threshold: number;
+  enabled: boolean;
+}
+
 interface Database {
   devices: any[];
   hardware_specs: any[];
@@ -13,6 +21,8 @@ interface Database {
   anomalies: any[];
   snapshots: any[];
   transfer_records: any[];
+  inventory_snapshots: any[];
+  anomaly_rules: AnomalyRule[];
   nextIds: {
     devices: number;
     hardware_specs: number;
@@ -20,6 +30,7 @@ interface Database {
     anomalies: number;
     snapshots: number;
     transfer_records: number;
+    inventory_snapshots: number;
   };
 }
 
@@ -41,6 +52,14 @@ function loadDatabase() {
     if (fs.existsSync(dbPath)) {
       const data = fs.readFileSync(dbPath, 'utf-8');
       db = JSON.parse(data);
+      
+      if (!db.anomaly_rules) {
+        db.anomaly_rules = getDefaultAnomalyRules();
+      }
+      if (!db.inventory_snapshots) {
+        db.inventory_snapshots = [];
+      }
+      
       log.info('Database loaded successfully');
     } else {
       db = {
@@ -50,13 +69,16 @@ function loadDatabase() {
         anomalies: [],
         snapshots: [],
         transfer_records: [],
+        inventory_snapshots: [],
+        anomaly_rules: getDefaultAnomalyRules(),
         nextIds: {
           devices: 1,
           hardware_specs: 1,
           tags: 1,
           anomalies: 1,
           snapshots: 1,
-          transfer_records: 1
+          transfer_records: 1,
+          inventory_snapshots: 1
         }
       };
       saveDatabase();
@@ -71,16 +93,28 @@ function loadDatabase() {
       anomalies: [],
       snapshots: [],
       transfer_records: [],
+      inventory_snapshots: [],
+      anomaly_rules: getDefaultAnomalyRules(),
       nextIds: {
         devices: 1,
         hardware_specs: 1,
         tags: 1,
         anomalies: 1,
         snapshots: 1,
-        transfer_records: 1
+        transfer_records: 1,
+        inventory_snapshots: 1
       }
     };
   }
+}
+
+function getDefaultAnomalyRules(): AnomalyRule[] {
+  return [
+    { id: 'low_memory', name: '低内存阈值', type: 'low_memory', threshold: 8, enabled: true },
+    { id: 'low_disk', name: '低磁盘阈值', type: 'low_disk', threshold: 256, enabled: true },
+    { id: 'disk_warning', name: '磁盘空间告警', type: 'disk_warning', threshold: 10, enabled: true },
+    { id: 'warranty_days', name: '保修提前提醒天数', type: 'warranty_days', threshold: 30, enabled: true }
+  ];
 }
 
 function saveDatabase() {
@@ -134,6 +168,12 @@ function generateAnomalyKey(deviceId: number, anomalyType: string, description: 
   return `${deviceId}_${anomalyType}_${description}`;
 }
 
+function getRuleThreshold(type: string): number {
+  if (!db) return 0;
+  const rule = db.anomaly_rules.find(r => r.type === type && r.enabled);
+  return rule ? rule.threshold : 0;
+}
+
 function detectAnomalies() {
   if (!db) return;
 
@@ -148,6 +188,11 @@ function detectAnomalies() {
   const currentAnomalyKeys = new Set<string>();
   const anomaliesToKeep = db.anomalies.filter(a => a.status !== 'pending');
 
+  const lowMemoryThreshold = getRuleThreshold('low_memory');
+  const lowDiskThreshold = getRuleThreshold('low_disk');
+  const diskWarningThreshold = getRuleThreshold('disk_warning');
+  const warrantyDaysThreshold = getRuleThreshold('warranty_days');
+
   db.devices.forEach(device => {
     const specs = db!.hardware_specs
       .filter(h => h.device_id === device.id)
@@ -156,8 +201,8 @@ function detectAnomalies() {
 
     if (specs) {
       const memSize = parseMemorySize(specs.memory);
-      if (memSize > 0 && memSize < 8) {
-        const desc = `${device.hostname} 内存容量 ${specs.memory}，低于8GB`;
+      if (memSize > 0 && memSize < lowMemoryThreshold) {
+        const desc = `${device.hostname} 内存容量 ${specs.memory}，低于${lowMemoryThreshold}GB`;
         const key = generateAnomalyKey(device.id, 'low_config', desc);
         currentAnomalyKeys.add(key);
         if (!existingPendingAnomalies.has(key)) {
@@ -174,8 +219,8 @@ function detectAnomalies() {
       }
 
       const diskSize = parseDiskSize(specs.disk);
-      if (diskSize > 0 && diskSize < 256) {
-        const desc = `${device.hostname} 磁盘容量 ${specs.disk}，低于256GB`;
+      if (diskSize > 0 && diskSize < lowDiskThreshold) {
+        const desc = `${device.hostname} 磁盘容量 ${specs.disk}，低于${lowDiskThreshold}GB`;
         const key = generateAnomalyKey(device.id, 'low_config', desc);
         currentAnomalyKeys.add(key);
         if (!existingPendingAnomalies.has(key)) {
@@ -192,8 +237,8 @@ function detectAnomalies() {
       }
 
       const freePercent = parseDiskFreePercent(specs.disk);
-      if (freePercent < 10) {
-        const desc = `${device.hostname} 磁盘可用空间 ${freePercent}%，低于10%`;
+      if (freePercent < diskWarningThreshold) {
+        const desc = `${device.hostname} 磁盘可用空间 ${freePercent}%，低于${diskWarningThreshold}%`;
         const key = generateAnomalyKey(device.id, 'disk_warning', desc);
         currentAnomalyKeys.add(key);
         if (!existingPendingAnomalies.has(key)) {
@@ -253,7 +298,7 @@ function detectAnomalies() {
         const now = new Date();
         const daysUntilExpiry = Math.ceil((warrantyDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
         
-        if (daysUntilExpiry > 0 && daysUntilExpiry <= 30) {
+        if (daysUntilExpiry > 0 && daysUntilExpiry <= warrantyDaysThreshold) {
           const desc = `${device.hostname} 保修将在${daysUntilExpiry}天后到期（${warrantyTag.tag_value}）`;
           const key = generateAnomalyKey(device.id, 'warranty_expiring', desc);
           currentAnomalyKeys.add(key);
@@ -592,6 +637,26 @@ function setupIpcHandlers() {
     }
   });
 
+  ipcMain.handle('anomaly_rules:getAll', async () => {
+    try {
+      return db!.anomaly_rules;
+    } catch (error) {
+      log.error('Error fetching anomaly rules:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('anomaly_rules:update', async (event, rules: AnomalyRule[]) => {
+    try {
+      db!.anomaly_rules = rules;
+      saveDatabase();
+      return { success: true };
+    } catch (error) {
+      log.error('Error updating anomaly rules:', error);
+      throw error;
+    }
+  });
+
   ipcMain.handle('dialog:openFile', async (event, options: any) => {
     const result = await dialog.showOpenDialog(mainWindow!, {
       properties: ['openFile'],
@@ -726,6 +791,54 @@ function setupIpcHandlers() {
       return results;
     } catch (error) {
       log.error('Error saving batch snapshots:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('inventory:getAll', async () => {
+    try {
+      return db!.inventory_snapshots
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    } catch (error) {
+      log.error('Error fetching inventory snapshots:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('inventory:create', async (event, snapshotData: any) => {
+    try {
+      const newSnapshot = {
+        id: db!.nextIds.inventory_snapshots++,
+        name: snapshotData.name || `盘点记录 ${new Date().toLocaleDateString('zh-CN')}`,
+        description: snapshotData.description || '',
+        devices: snapshotData.devices || [],
+        created_at: new Date().toISOString()
+      };
+      db!.inventory_snapshots.push(newSnapshot);
+      saveDatabase();
+      return newSnapshot;
+    } catch (error) {
+      log.error('Error creating inventory snapshot:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('inventory:getById', async (event, id: number) => {
+    try {
+      return db!.inventory_snapshots.find(s => s.id === id) || null;
+    } catch (error) {
+      log.error('Error fetching inventory snapshot:', error);
+      throw error;
+    }
+  });
+
+  ipcMain.handle('inventory:delete', async (event, id: number) => {
+    try {
+      db!.inventory_snapshots = db!.inventory_snapshots.filter(s => s.id !== id);
+      saveDatabase();
+      return { success: true };
+    } catch (error) {
+      log.error('Error deleting inventory snapshot:', error);
       throw error;
     }
   });

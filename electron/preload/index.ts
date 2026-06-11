@@ -24,10 +24,20 @@ const electronAPI = {
     create: (anomalyData: any) => ipcRenderer.invoke('anomalies:create', anomalyData),
     detectAll: () => ipcRenderer.invoke('anomalies:detectAll'),
   },
+  anomaly_rules: {
+    getAll: () => ipcRenderer.invoke('anomaly_rules:getAll'),
+    update: (rules: any[]) => ipcRenderer.invoke('anomaly_rules:update', rules),
+  },
   snapshots: {
     getByDevice: (deviceId: number) => ipcRenderer.invoke('snapshots:getByDevice', deviceId),
     save: (deviceId: number, snapshotData: any) => ipcRenderer.invoke('snapshots:save', deviceId, snapshotData),
     saveBatch: (deviceIds: number[]) => ipcRenderer.invoke('snapshots:saveBatch', deviceIds),
+  },
+  inventory: {
+    getAll: () => ipcRenderer.invoke('inventory:getAll'),
+    create: (snapshotData: any) => ipcRenderer.invoke('inventory:create', snapshotData),
+    getById: (id: number) => ipcRenderer.invoke('inventory:getById', id),
+    delete: (id: number) => ipcRenderer.invoke('inventory:delete', id),
   },
   transfer: {
     create: (transferData: any) => ipcRenderer.invoke('transfer:create', transferData),

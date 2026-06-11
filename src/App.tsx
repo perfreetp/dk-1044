@@ -6,11 +6,13 @@ import DeviceListPage from './pages/DeviceList';
 import DeviceDetailPage from './pages/DeviceDetail';
 import TagManagerPage from './pages/TagManager';
 import AnomalyDashboardPage from './pages/AnomalyDashboard';
+import InventoryHistoryPage from './pages/InventoryHistory';
+import ImportPreviewPage from './pages/ImportPreview';
 import BatchOperationsModal from './components/Modal/BatchOperationsModal';
 import AddDeviceModal from './components/Modal/AddDeviceModal';
 
 function App() {
-  const { theme, currentPage, modals, openModal } = useUIStore();
+  const { theme, currentPage, modals } = useUIStore();
 
   useEffect(() => {
     if (theme === 'dark') {
@@ -30,6 +32,10 @@ function App() {
         return <TagManagerPage />;
       case 'anomaly-dashboard':
         return <AnomalyDashboardPage />;
+      case 'inventory-history':
+        return <InventoryHistoryPage />;
+      case 'import-preview':
+        return <ImportPreviewPage />;
       default:
         return <DeviceListPage />;
     }

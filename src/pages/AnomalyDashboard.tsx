@@ -1,15 +1,27 @@
 import { useEffect, useState } from 'react';
 import type { Anomaly } from '../types';
 
+interface AnomalyRule {
+  id: string;
+  name: string;
+  type: 'low_memory' | 'low_disk' | 'disk_warning' | 'warranty_days';
+  threshold: number;
+  enabled: boolean;
+}
+
 export default function AnomalyDashboardPage() {
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [filteredAnomalies, setFilteredAnomalies] = useState<Anomaly[]>([]);
   const [filterType, setFilterType] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [loading, setLoading] = useState(true);
+  const [showRules, setShowRules] = useState(false);
+  const [rules, setRules] = useState<AnomalyRule[]>([]);
+  const [rulesChanged, setRulesChanged] = useState(false);
 
   useEffect(() => {
     fetchAnomalies();
+    fetchRules();
   }, []);
 
   useEffect(() => {
@@ -25,6 +37,15 @@ export default function AnomalyDashboardPage() {
       console.error('Error fetching anomalies:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchRules = async () => {
+    try {
+      const data = await window.electronAPI.anomaly_rules.getAll();
+      setRules(data);
+    } catch (error) {
+      console.error('Error fetching rules:', error);
     }
   };
 
@@ -57,6 +78,54 @@ export default function AnomalyDashboardPage() {
       await fetchAnomalies();
     } catch (error) {
       console.error('Error ignoring anomaly:', error);
+    }
+  };
+
+  const handleReDetect = async () => {
+    setLoading(true);
+    try {
+      await window.electronAPI.anomalies.detectAll();
+      await fetchAnomalies();
+      alert('异常检测完成');
+    } catch (error) {
+      console.error('Error detecting anomalies:', error);
+      alert('检测失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRuleChange = (ruleId: string, field: 'threshold' | 'enabled', value: number | boolean) => {
+    setRules(prev => prev.map(rule => {
+      if (rule.id === ruleId) {
+        return { ...rule, [field]: value };
+      }
+      return rule;
+    }));
+    setRulesChanged(true);
+  };
+
+  const handleSaveRules = async () => {
+    try {
+      await window.electronAPI.anomaly_rules.update(rules);
+      setRulesChanged(false);
+      alert('规则保存成功');
+    } catch (error) {
+      console.error('Error saving rules:', error);
+      alert('规则保存失败');
+    }
+  };
+
+  const handleApplyRulesAndDetect = async () => {
+    try {
+      await window.electronAPI.anomaly_rules.update(rules);
+      setRulesChanged(false);
+      await window.electronAPI.anomalies.detectAll();
+      await fetchAnomalies();
+      alert('规则已更新并重新检测完成');
+    } catch (error) {
+      console.error('Error applying rules:', error);
+      alert('操作失败');
     }
   };
 
@@ -106,6 +175,26 @@ export default function AnomalyDashboardPage() {
       warranty_expiring: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z'
     };
     return icons[type] || icons.low_config;
+  };
+
+  const getRuleDescription = (type: string) => {
+    const descriptions: Record<string, string> = {
+      low_memory: '内存低于此值时触发告警',
+      low_disk: '磁盘容量低于此值时触发告警',
+      disk_warning: '磁盘可用空间百分比低于此值时触发告警',
+      warranty_days: '保修到期前此天数内触发提醒'
+    };
+    return descriptions[type] || '';
+  };
+
+  const getRuleUnit = (type: string) => {
+    const units: Record<string, string> = {
+      low_memory: 'GB',
+      low_disk: 'GB',
+      disk_warning: '%',
+      warranty_days: '天'
+    };
+    return units[type] || '';
   };
 
   if (loading) {
@@ -208,30 +297,90 @@ export default function AnomalyDashboardPage() {
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white">异常列表</h3>
           <div className="flex gap-4">
-            <select
-              value={filterType}
-              onChange={(e) => setFilterType(e.target.value)}
-              className="input-field w-40"
+            <button
+              onClick={() => setShowRules(!showRules)}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                showRules ? 'bg-primary-600 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+              }`}
             >
-              <option value="all">全部类型</option>
-              <option value="low_config">配置过低</option>
-              <option value="disk_warning">磁盘告警</option>
-              <option value="unassigned_owner">未登记责任人</option>
-              <option value="duplicate_hostname">重复主机名</option>
-              <option value="warranty_expiring">保修临期</option>
-            </select>
-
-            <select
-              value={filterStatus}
-              onChange={(e) => setFilterStatus(e.target.value)}
-              className="input-field w-32"
-            >
-              <option value="all">全部状态</option>
-              <option value="pending">待处理</option>
-              <option value="resolved">已解决</option>
-              <option value="ignored">已忽略</option>
-            </select>
+              规则设置
+            </button>
+            <button onClick={handleReDetect} className="btn-primary">
+              重新检测
+            </button>
           </div>
+        </div>
+
+        {showRules && (
+          <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-700 rounded-lg">
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="font-medium text-gray-800 dark:text-white">异常检测规则</h4>
+              <div className="flex gap-2">
+                {rulesChanged && (
+                  <button onClick={handleSaveRules} className="btn-secondary text-sm">
+                    保存规则
+                  </button>
+                )}
+                {rulesChanged && (
+                  <button onClick={handleApplyRulesAndDetect} className="btn-primary text-sm">
+                    保存并重新检测
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {rules.map((rule) => (
+                <div key={rule.id} className="flex items-center gap-4 p-3 bg-white dark:bg-gray-800 rounded-lg">
+                  <input
+                    type="checkbox"
+                    checked={rule.enabled}
+                    onChange={(e) => handleRuleChange(rule.id, 'enabled', e.target.checked)}
+                    className="rounded border-gray-300"
+                  />
+                  <div className="flex-1">
+                    <p className="font-medium text-gray-800 dark:text-white">{rule.name}</p>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">{getRuleDescription(rule.type)}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={rule.threshold}
+                      onChange={(e) => handleRuleChange(rule.id, 'threshold', parseInt(e.target.value) || 0)}
+                      disabled={!rule.enabled}
+                      className="input-field w-20 text-center"
+                    />
+                    <span className="text-gray-500">{getRuleUnit(rule.type)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-4 mb-6">
+          <select
+            value={filterType}
+            onChange={(e) => setFilterType(e.target.value)}
+            className="input-field w-40"
+          >
+            <option value="all">全部类型</option>
+            <option value="low_config">配置过低</option>
+            <option value="disk_warning">磁盘告警</option>
+            <option value="unassigned_owner">未登记责任人</option>
+            <option value="duplicate_hostname">重复主机名</option>
+            <option value="warranty_expiring">保修临期</option>
+          </select>
+
+          <select
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="input-field w-32"
+          >
+            <option value="all">全部状态</option>
+            <option value="pending">待处理</option>
+            <option value="resolved">已解决</option>
+            <option value="ignored">已忽略</option>
+          </select>
         </div>
 
         {filteredAnomalies.length === 0 ? (
@@ -310,23 +459,23 @@ export default function AnomalyDashboardPage() {
       </div>
 
       <div className="card">
-        <h4 className="text-lg font-semibold text-gray-800 dark:text-white mb-4">异常检测规则</h4>
+        <h4 className="text-lg font-semibold text-gray-800 dark:text-white mb-4">异常检测规则说明</h4>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
             <p className="font-medium text-gray-800 dark:text-white">配置过低</p>
-            <p className="text-gray-600 dark:text-gray-400">内存低于8GB、磁盘容量低于256GB、CPU核心数少于2</p>
+            <p className="text-gray-600 dark:text-gray-400">内存低于设定阈值、磁盘容量低于设定阈值时触发</p>
           </div>
           <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
             <p className="font-medium text-gray-800 dark:text-white">磁盘告警</p>
-            <p className="text-gray-600 dark:text-gray-400">可用空间低于10%或低于20GB</p>
+            <p className="text-gray-600 dark:text-gray-400">磁盘可用空间百分比低于设定阈值时触发</p>
           </div>
           <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
             <p className="font-medium text-gray-800 dark:text-white">未登记责任人</p>
-            <p className="text-gray-600 dark:text-gray-400">责任人字段为空</p>
+            <p className="text-gray-600 dark:text-gray-400">责任人字段为空时触发</p>
           </div>
           <div className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
             <p className="font-medium text-gray-800 dark:text-white">保修临期</p>
-            <p className="text-gray-600 dark:text-gray-400">保修期在30天内即将到期</p>
+            <p className="text-gray-600 dark:text-gray-400">保修到期前设定天数内触发</p>
           </div>
         </div>
       </div>
